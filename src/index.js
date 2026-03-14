@@ -8,6 +8,11 @@
  * - SettlementHandler: Manages Fiber channels, settles winners
  * - TournamentOrchestrator: Coordinates state, resolves disputes
  * 
+ * Hardware:
+ * - GPIO18 PWM fan control (30mm DC fan via MOSFET)
+ * - CKB RPC polling (deposits)
+ * - Ollama inference (NucBox)
+ * 
  * Accessible via: @OcRyzesBot (Telegram) + HTTP API
  * Collaborative: Kernel (assistant) + Phill (user) can guide
  */
@@ -19,6 +24,7 @@ const { EventEmitter } = require('events');
 
 const CKBClient = require('./ckb-client');
 const TelegramHandler = require('./telegram-handler');
+const FanController = require('./fan-controller');
 const Database = require('./database');
 
 class FiberQuestAgent extends EventEmitter {
@@ -36,6 +42,7 @@ class FiberQuestAgent extends EventEmitter {
     this.db = new Database();
     this.ckb = new CKBClient(this.config);
     this.telegram = new TelegramHandler(this.config);
+    this.fan = new FanController();
     this.subagents = new Map();
     this.workQueue = [];
     this.startTime = Date.now();
@@ -46,6 +53,14 @@ class FiberQuestAgent extends EventEmitter {
     
     await this.db.init();
     console.log('[FiberQuest] Database initialized');
+
+    // Start fan controller
+    try {
+      await this.fan.start();
+      global.fanController = this.fan;
+    } catch (e) {
+      console.warn('[FiberQuest] Fan controller error (non-fatal):', e.message);
+    }
 
     // Verify escrow address
     if (!this.config.escrowAddress || !this.config.escrowPrivateKey) {
@@ -99,6 +114,7 @@ class FiberQuestAgent extends EventEmitter {
         status: 'ok', 
         uptime: Math.floor((Date.now() - this.startTime) / 1000),
         escrow: this.config.escrowAddress,
+        fan: { duty_cycle: this.fan.currentDutyCycle + '%' },
       });
     });
 
@@ -111,6 +127,7 @@ class FiberQuestAgent extends EventEmitter {
         ckb: this.config.ckbRpc,
         workQueueSize: this.workQueue.length,
         subagents: Array.from(this.subagents.keys()),
+        fan: { duty_cycle: this.fan.currentDutyCycle + '%' },
       });
     });
 
@@ -162,6 +179,15 @@ class FiberQuestAgent extends EventEmitter {
     });
   }
 }
+
+// Run agent
+const agent = new FiberQuestAgent();
+agent.start().catch(err => {
+  console.error('[FiberQuest] Fatal error:', err);
+  process.exit(1);
+});
+
+module.exports = FiberQuestAgent;
 
 // Run agent
 const agent = new FiberQuestAgent();
