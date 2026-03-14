@@ -1,24 +1,23 @@
 #!/usr/bin/env node
 /**
- * FiberQuest Agent
+ * FiberQuest Agent (Main Orchestrator)
  * 
- * Responsibilities:
- * - Monitor CKB escrow address for entry fee deposits
- * - Watch tournament cutoff blocks → publish results to chain
- * - Run game validators (calls NucBox Ollama for inference)
- * - Manage Fiber payment channels → settle winners
- * - Auto-approve/reject payouts based on validator output
+ * Spawns specialized subagents:
+ * - EscrowWatcher: Monitors CKB deposits, triggers tournaments
+ * - GameValidator: Validates game results via Ollama reasoning
+ * - SettlementHandler: Manages Fiber channels, settles winners
+ * - TournamentOrchestrator: Coordinates state, resolves disputes
+ * 
+ * Accessible to: Kernel (local assistant) + Phill (user)
+ * Collaborative: Keep on track, intervene as needed
  */
 
 require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const { EventEmitter } = require('events');
+const { sessions_spawn } = require('openclaw-sdk'); // Integration with OpenClaw
 
-const EscrowMonitor = require('./escrow-monitor');
-const TournamentManager = require('./tournament-manager');
-const GameValidator = require('./game-validator');
-const FiberSettlement = require('./fiber-settlement');
 const Database = require('./database');
 
 class FiberQuestAgent extends EventEmitter {
@@ -34,17 +33,15 @@ class FiberQuestAgent extends EventEmitter {
     };
 
     this.db = new Database();
-    this.escrowMonitor = new EscrowMonitor(this.config, this);
-    this.tournamentManager = new TournamentManager(this.config, this);
-    this.validator = new GameValidator(this.config, this);
-    this.settlement = new FiberSettlement(this.config, this);
+    this.subagents = new Map(); // Track spawned subagents
+    this.workQueue = []; // Pending validation/settlement tasks
   }
 
   async initialize() {
-    console.log('[Agent] Initializing FiberQuest Agent...');
+    console.log('[FiberQuest] Initializing main orchestrator...');
     
     await this.db.init();
-    console.log('[Agent] Database initialized');
+    console.log('[FiberQuest] Database initialized');
 
     // Verify escrow address
     if (!this.config.escrowAddress || !this.config.escrowPrivateKey) {
@@ -54,27 +51,53 @@ class FiberQuestAgent extends EventEmitter {
     // Verify Ollama connectivity
     try {
       await axios.get(`${this.config.ollama}/api/tags`);
-      console.log('[Agent] ✅ Ollama connected at', this.config.ollama);
+      console.log('[FiberQuest] ✅ Ollama connected at', this.config.ollama);
     } catch (e) {
       throw new Error(`Cannot reach Ollama at ${this.config.ollama}: ${e.message}`);
     }
 
-    console.log('[Agent] Ready. Escrow address:', this.config.escrowAddress);
+    console.log('[FiberQuest] Ready. Escrow:', this.config.escrowAddress);
+  }
+
+  async spawnSubagent(name, task) {
+    console.log(`[FiberQuest] Spawning subagent: ${name}`);
+    
+    try {
+      const subagent = await sessions_spawn({
+        task,
+        agentId: 'default',
+        mode: 'session', // Persistent session
+        label: `FiberQuest/${name}`,
+      });
+
+      this.subagents.set(name, subagent);
+      console.log(`[FiberQuest] ✅ Subagent spawned: ${name}`);
+      return subagent;
+    } catch (e) {
+      console.error(`[FiberQuest] Failed to spawn ${name}:`, e.message);
+      throw e;
+    }
   }
 
   async start() {
     await this.initialize();
 
-    // Start monitors
-    this.escrowMonitor.start();
-    this.tournamentManager.start();
+    // Spawn persistent subagents
+    await this.spawnSubagent('escrow-watcher', 'Monitor CKB escrow address for deposits and trigger tournaments');
+    await this.spawnSubagent('game-validator', 'Validate game results using Ollama deepseek-r1:32b reasoning');
+    await this.spawnSubagent('settlement-handler', 'Manage Fiber payment channels and settle winners');
+    await this.spawnSubagent('tournament-orchestrator', 'Coordinate tournament state and resolve disputes');
 
-    // HTTP server for health checks + RPC
+    // HTTP server for health + RPC
     const app = express();
     app.use(express.json());
 
     app.get('/health', (req, res) => {
-      res.json({ status: 'ok', uptime: process.uptime() });
+      res.json({ 
+        status: 'ok', 
+        uptime: process.uptime(),
+        subagents: Array.from(this.subagents.keys()),
+      });
     });
 
     app.get('/status', (req, res) => {
@@ -82,33 +105,50 @@ class FiberQuestAgent extends EventEmitter {
         escrow: this.config.escrowAddress,
         ollama: this.config.ollama,
         uptime: process.uptime(),
-        tournaments: this.tournamentManager.activeTournaments.size,
+        activeSubagents: this.subagents.size,
+        workQueueSize: this.workQueue.length,
       });
     });
 
-    // Tournament RPC endpoints
-    app.post('/rpc/validate-game', async (req, res) => {
+    // Queue a game for validation
+    app.post('/queue/validate-game', async (req, res) => {
       try {
         const { gameId, playerData, ramDump } = req.body;
-        const result = await this.validator.validate(gameId, playerData, ramDump);
-        res.json(result);
+        const taskId = `val-${Date.now()}`;
+        
+        this.workQueue.push({ type: 'validate', taskId, gameId, playerData, ramDump });
+        
+        // Send to validator subagent
+        const validator = this.subagents.get('game-validator');
+        await validator.send(`Validate ${gameId} for player ${playerData.playerId}: ${JSON.stringify(playerData)}`);
+        
+        res.json({ taskId, queued: true });
       } catch (e) {
         res.status(500).json({ error: e.message });
       }
     });
 
-    app.post('/rpc/settle-winner', async (req, res) => {
+    // Queue a settlement
+    app.post('/queue/settle-winner', async (req, res) => {
       try {
         const { tournamentId, winnerId, prizeAmount } = req.body;
-        const txHash = await this.settlement.settleWinner(tournamentId, winnerId, prizeAmount);
-        res.json({ txHash });
+        const taskId = `settle-${Date.now()}`;
+        
+        this.workQueue.push({ type: 'settle', taskId, tournamentId, winnerId, prizeAmount });
+        
+        // Send to settlement subagent
+        const settlement = this.subagents.get('settlement-handler');
+        await settlement.send(`Settle tournament ${tournamentId}: pay ${prizeAmount} CKB to ${winnerId}`);
+        
+        res.json({ taskId, queued: true });
       } catch (e) {
         res.status(500).json({ error: e.message });
       }
     });
 
     app.listen(this.config.port, () => {
-      console.log(`[Agent] HTTP server listening on port ${this.config.port}`);
+      console.log(`[FiberQuest] HTTP server listening on port ${this.config.port}`);
+      console.log(`[FiberQuest] Ready for work. Kernel and Phill can now guide the system.`);
     });
   }
 }
