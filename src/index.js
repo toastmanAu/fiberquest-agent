@@ -28,6 +28,7 @@ const EntryHandler = require('./entry-handler');
 const FiberSettler = require('./fiber-settler');
 const WebsiteAPI = require('./website-api');
 const Database = require('./database');
+const { createSigner } = require('./signer-factory');
 
 class FiberQuestAgent extends EventEmitter {
   constructor() {
@@ -43,9 +44,14 @@ class FiberQuestAgent extends EventEmitter {
 
     this.db = new Database();
     this.ckb = new CKBClient(this.config);
+    this.signer = createSigner({
+      signerMode: process.env.SIGNER_MODE || 'direct',
+      walletServerUrl: process.env.WALLET_SERVER_URL,
+      escrowPrivateKey: process.env.CKB_ESCROW_PRIVATE_KEY,
+    });
     this.telegram = new TelegramHandler(this.config);
     this.entryHandler = new EntryHandler(this.config, this.db, this.ckb);
-    this.fiberSettler = new FiberSettler(this.config, this.db);
+    this.fiberSettler = new FiberSettler(this.config, this.db, this.signer);
     this.subagents = new Map();
     this.workQueue = [];
     this.startTime = Date.now();
@@ -57,9 +63,13 @@ class FiberQuestAgent extends EventEmitter {
     await this.db.init();
     console.log('[FiberQuest] Database initialized');
 
+    // Get signer address
+    const signerAddress = await this.signer.getAddress();
+    console.log('[FiberQuest] Signer address:', signerAddress);
+
     // Verify escrow address
-    if (!this.config.escrowAddress || !this.config.escrowPrivateKey) {
-      throw new Error('Missing CKB_ESCROW_ADDRESS or CKB_ESCROW_PRIVATE_KEY');
+    if (!this.config.escrowAddress) {
+      throw new Error('Missing CKB_ESCROW_ADDRESS');
     }
 
     // Verify Ollama connectivity
