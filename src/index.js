@@ -8,16 +8,17 @@
  * - SettlementHandler: Manages Fiber channels, settles winners
  * - TournamentOrchestrator: Coordinates state, resolves disputes
  * 
- * Accessible to: Kernel (local assistant) + Phill (user)
- * Collaborative: Keep on track, intervene as needed
+ * Accessible via: @OcRyzesBot (Telegram) + HTTP API
+ * Collaborative: Kernel (assistant) + Phill (user) can guide
  */
 
 require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const { EventEmitter } = require('events');
-const { sessions_spawn } = require('openclaw-sdk'); // Integration with OpenClaw
 
+const CKBClient = require('./ckb-client');
+const TelegramHandler = require('./telegram-handler');
 const Database = require('./database');
 
 class FiberQuestAgent extends EventEmitter {
@@ -33,8 +34,11 @@ class FiberQuestAgent extends EventEmitter {
     };
 
     this.db = new Database();
-    this.subagents = new Map(); // Track spawned subagents
-    this.workQueue = []; // Pending validation/settlement tasks
+    this.ckb = new CKBClient(this.config);
+    this.telegram = new TelegramHandler(this.config);
+    this.subagents = new Map();
+    this.workQueue = [];
+    this.startTime = Date.now();
   }
 
   async initialize() {
@@ -56,71 +60,79 @@ class FiberQuestAgent extends EventEmitter {
       throw new Error(`Cannot reach Ollama at ${this.config.ollama}: ${e.message}`);
     }
 
+    // Verify CKB RPC
+    try {
+      const blockNum = await this.ckb.getBlockNumber();
+      console.log('[FiberQuest] ✅ CKB RPC connected, block:', blockNum);
+    } catch (e) {
+      throw new Error(`Cannot reach CKB RPC: ${e.message}`);
+    }
+
     console.log('[FiberQuest] Ready. Escrow:', this.config.escrowAddress);
   }
 
-  async spawnSubagent(name, task) {
-    console.log(`[FiberQuest] Spawning subagent: ${name}`);
-    
-    try {
-      const subagent = await sessions_spawn({
-        task,
-        agentId: 'default',
-        mode: 'session', // Persistent session
-        label: `FiberQuest/${name}`,
-      });
-
-      this.subagents.set(name, subagent);
-      console.log(`[FiberQuest] ✅ Subagent spawned: ${name}`);
-      return subagent;
-    } catch (e) {
-      console.error(`[FiberQuest] Failed to spawn ${name}:`, e.message);
-      throw e;
-    }
+  async startDepositPolling() {
+    console.log('[FiberQuest] Starting CKB deposit polling...');
+    setInterval(async () => {
+      try {
+        const deposits = await this.ckb.pollForDeposits();
+        if (deposits.length > 0) {
+          console.log(`[FiberQuest] 🔔 Detected ${deposits.length} new deposits`);
+          this.emit('deposits', deposits);
+        }
+      } catch (e) {
+        console.error('[FiberQuest] Polling error:', e.message);
+      }
+    }, 12000); // Poll every 2 blocks (~12 seconds)
   }
 
   async start() {
     await this.initialize();
+    this.startDepositPolling();
 
-    // Spawn persistent subagents
-    await this.spawnSubagent('escrow-watcher', 'Monitor CKB escrow address for deposits and trigger tournaments');
-    await this.spawnSubagent('game-validator', 'Validate game results using Ollama deepseek-r1:32b reasoning');
-    await this.spawnSubagent('settlement-handler', 'Manage Fiber payment channels and settle winners');
-    await this.spawnSubagent('tournament-orchestrator', 'Coordinate tournament state and resolve disputes');
-
-    // HTTP server for health + RPC
+    // HTTP server
     const app = express();
     app.use(express.json());
 
     app.get('/health', (req, res) => {
       res.json({ 
         status: 'ok', 
-        uptime: process.uptime(),
-        subagents: Array.from(this.subagents.keys()),
+        uptime: Math.floor((Date.now() - this.startTime) / 1000),
+        escrow: this.config.escrowAddress,
       });
     });
 
     app.get('/status', (req, res) => {
       res.json({
+        status: 'running',
+        uptime: Math.floor((Date.now() - this.startTime) / 1000),
         escrow: this.config.escrowAddress,
         ollama: this.config.ollama,
-        uptime: process.uptime(),
-        activeSubagents: this.subagents.size,
+        ckb: this.config.ckbRpc,
         workQueueSize: this.workQueue.length,
+        subagents: Array.from(this.subagents.keys()),
       });
     });
 
-    // Queue a game for validation
+    // Telegram webhook
+    app.post('/telegram', async (req, res) => {
+      try {
+        const result = await this.telegram.handleWebhook(req.body);
+        res.json(result || { ok: false });
+      } catch (e) {
+        console.error('[FiberQuest] Telegram handler error:', e.message);
+        res.status(500).json({ error: e.message });
+      }
+    });
+
+    // Queue validation
     app.post('/queue/validate-game', async (req, res) => {
       try {
         const { gameId, playerData, ramDump } = req.body;
         const taskId = `val-${Date.now()}`;
         
         this.workQueue.push({ type: 'validate', taskId, gameId, playerData, ramDump });
-        
-        // Send to validator subagent
-        const validator = this.subagents.get('game-validator');
-        await validator.send(`Validate ${gameId} for player ${playerData.playerId}: ${JSON.stringify(playerData)}`);
+        console.log(`[FiberQuest] Queued validation: ${taskId}`);
         
         res.json({ taskId, queued: true });
       } catch (e) {
@@ -128,17 +140,14 @@ class FiberQuestAgent extends EventEmitter {
       }
     });
 
-    // Queue a settlement
+    // Queue settlement
     app.post('/queue/settle-winner', async (req, res) => {
       try {
         const { tournamentId, winnerId, prizeAmount } = req.body;
         const taskId = `settle-${Date.now()}`;
         
         this.workQueue.push({ type: 'settle', taskId, tournamentId, winnerId, prizeAmount });
-        
-        // Send to settlement subagent
-        const settlement = this.subagents.get('settlement-handler');
-        await settlement.send(`Settle tournament ${tournamentId}: pay ${prizeAmount} CKB to ${winnerId}`);
+        console.log(`[FiberQuest] Queued settlement: ${taskId}`);
         
         res.json({ taskId, queued: true });
       } catch (e) {
@@ -148,7 +157,8 @@ class FiberQuestAgent extends EventEmitter {
 
     app.listen(this.config.port, () => {
       console.log(`[FiberQuest] HTTP server listening on port ${this.config.port}`);
-      console.log(`[FiberQuest] Ready for work. Kernel and Phill can now guide the system.`);
+      console.log(`[FiberQuest] Telegram webhook: /telegram`);
+      console.log(`[FiberQuest] Ready for work. @OcRyzesBot is now live.`);
     });
   }
 }
