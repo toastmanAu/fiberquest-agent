@@ -8,6 +8,9 @@
  */
 
 const axios = require('axios');
+const PokemonValidator = require('./validators/pokemon-fire-red');
+const MK2Validator = require('./validators/mortal-kombat-2');
+const MK64Validator = require('./validators/mario-kart-64');
 
 class GameValidator {
   constructor(config, agent) {
@@ -17,89 +20,63 @@ class GameValidator {
       baseURL: config.ollama,
       timeout: 60000,
     });
+
+    // Load game-specific validators
+    this.validators = {
+      'pokemon-fire-red': new PokemonValidator(),
+      'mortal-kombat-2': new MK2Validator(),
+      'mario-kart-64': new MK64Validator(),
+    };
   }
 
   /**
    * Validate a game result based on RAM dump + game metadata
-   * @param {string} gameId - Game ID (e.g., "pokemon-fire-red")
-   * @param {object} playerData - {playerId, score, time, finalState}
-   * @param {Buffer} ramDump - Raw WRAM dump from emulator
-   * @returns {Promise<{valid: boolean, confidence: number, reason: string}>}
    */
   async validate(gameId, playerData, ramDump) {
     console.log(`[Validator] Validating ${gameId} for player ${playerData.playerId}`);
 
+    const validator = this.validators[gameId];
+    if (!validator) {
+      throw new Error(`Unknown game: ${gameId}`);
+    }
+
     try {
-      // 1. Pattern-match known cheating vectors (fast path)
-      const patternResult = this._patternMatch(gameId, playerData, ramDump);
+      // 1. Pattern-match (fast path)
+      const patternResult = validator.patternMatch(playerData, ramDump);
       if (!patternResult.valid) {
-        return { valid: false, confidence: 0.95, reason: patternResult.reason };
+        return { 
+          valid: false, 
+          confidence: patternResult.confidence, 
+          reason: patternResult.reason,
+          patternMatch: true,
+        };
       }
 
       // 2. Call Ollama deepseek-r1:32b for reasoning (slow path)
-      const reasoning = await this._reasonAboutState(gameId, playerData, ramDump);
+      const prompt = validator.reasoningPrompt(playerData, ramDump);
+      const reasoning = await this._reasonWithDeepSeek(prompt);
 
       return {
         valid: reasoning.valid,
         confidence: reasoning.confidence,
-        reason: reasoning.reason,
-        reasoning: reasoning.chain, // Full CoT trace for audit
+        reason: reasoning.reasoning || reasoning.reason,
+        chain: reasoning.fullChain,
+        patternMatch: false,
       };
     } catch (e) {
       console.error(`[Validator] Error validating ${gameId}:`, e.message);
-      return { valid: false, confidence: 0.0, reason: `Validation error: ${e.message}` };
+      return { 
+        valid: false, 
+        confidence: 0.0, 
+        reason: `Validation error: ${e.message}` 
+      };
     }
-  }
-
-  /**
-   * Fast pattern matching for obvious cheating
-   */
-  _patternMatch(gameId, playerData, ramDump) {
-    // Example: Pokémon Fire Red
-    if (gameId === 'pokemon-fire-red') {
-      // Check if level is >100 (impossible)
-      const levelAddr = 0x0529;
-      const level = ramDump[levelAddr];
-      if (level > 100) {
-        return { valid: false, reason: `Level ${level} > 100 (impossible)` };
-      }
-
-      // Check if money > 999999 (requires sequence breaking)
-      const moneyAddr = 0x0540; // Rough estimate
-      if (playerData.finalMoney > 999999) {
-        return { valid: false, reason: `Money ${playerData.finalMoney} exceeds max` };
-      }
-    }
-
-    return { valid: true };
   }
 
   /**
    * Call deepseek-r1:32b for chain-of-thought reasoning
    */
-  async _reasonAboutState(gameId, playerData, ramDump) {
-    const prompt = `
-You are a retro game cheating detector. Analyze this game result:
-
-Game: ${gameId}
-Player: ${playerData.playerId}
-Final Score: ${playerData.score}
-Time Elapsed: ${playerData.time}s
-RAM State Hash: ${Buffer.from(ramDump).toString('hex').substring(0, 32)}...
-
-Known facts about ${gameId}:
-- Normal max score: 999999
-- Speedrun record: 2h 15m
-- Starting cash: 3000
-
-Is this result legitimate? Consider:
-1. Is the score achievable in the given time?
-2. Are there any impossible game states?
-3. Could this be bot-assisted speedrunning?
-
-Return JSON: {"valid": bool, "confidence": 0-1, "reasoning": "..."}
-`;
-
+  async _reasonWithDeepSeek(prompt) {
     try {
       const response = await this.ollamaClient.post('/api/generate', {
         model: 'deepseek-r1:32b',
@@ -108,14 +85,24 @@ Return JSON: {"valid": bool, "confidence": 0-1, "reasoning": "..."}
       });
 
       const text = response.data.response;
-      const json = JSON.parse(text);
-
-      return {
-        valid: json.valid,
-        confidence: json.confidence || 0.8,
-        reason: json.reasoning,
-        chain: text,
-      };
+      
+      try {
+        const json = JSON.parse(text);
+        return {
+          valid: json.valid,
+          confidence: json.confidence || 0.8,
+          reasoning: json.reasoning || json.reason,
+          fullChain: text,
+        };
+      } catch (e) {
+        // Model didn't return JSON, extract from text
+        return {
+          valid: text.toLowerCase().includes('legitimate') || text.toLowerCase().includes('valid'),
+          confidence: 0.7,
+          reasoning: text.substring(0, 500),
+          fullChain: text,
+        };
+      }
     } catch (e) {
       console.error('[Validator] Ollama call failed:', e.message);
       throw e;
