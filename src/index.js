@@ -202,12 +202,3 @@ agent.start().catch(err => {
 });
 
 module.exports = FiberQuestAgent;
-
-// Run agent
-const agent = new FiberQuestAgent();
-agent.start().catch(err => {
-  console.error('[Agent] Fatal error:', err);
-  process.exit(1);
-});
-
-module.exports = FiberQuestAgent;
