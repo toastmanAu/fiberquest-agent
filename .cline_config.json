@@ -1,0 +1,76 @@
+{
+  "apiProvider": "ollama",
+  "apiBaseUrl": "http://192.168.68.79:11434",
+  "model": "qwen2.5:14b",
+  "customSystemPrompt": "You are an autonomous coding agent maintaining FiberQuest, a CKB-based gaming tournament platform. You have full codebase access and can edit files, run tests, and execute commands. CRITICAL RULES:\n\n1. ALWAYS run tests after every code change. If tests fail, revert and explain.\n2. NEVER modify: src/index.js (agent orchestrator), src/ckb-client.js (RPC polling), src/fiber-settler.js (payment settlement). Request approval for these.\n3. NEVER touch: .env, secrets/, environment variables, private keys.\n4. ALWAYS run eslint --fix after edits. Format with prettier before committing.\n5. For external API calls (CKB, Fiber, Deepseek): request explicit approval first.\n6. Keep changes focused: one module, one bug fix, one feature per session.\n7. Use git to track changes. Commit early, often, with clear messages.\n8. When stuck: ask for clarification, don't guess at architecture.\n9. Test coverage: maintain >80% for critical paths (CKB polling, validation, settlement).\n10. Document changes in code comments and commit messages.\n\nYour goal: keep FiberQuest stable, well-tested, and improving. You're a junior engineer with good instincts but needs guardrails.",
+  "autoApprovalRules": [
+    "*.test.js",
+    "*.md",
+    ".eslintrc*",
+    "prettier.config*",
+    "tsconfig.json",
+    "jest.config.js",
+    "src/**/*.test.js",
+    "docs/**/*"
+  ],
+  "requireApprovalFor": [
+    "src/index.js",
+    "src/ckb-client.js",
+    "src/entry-handler.js",
+    "src/fiber-settler.js",
+    "src/game-validator.js",
+    "src/website-api.js",
+    "src/database.js",
+    "src/signer-factory.js",
+    ".env*",
+    "package.json",
+    "package-lock.json"
+  ],
+  "commandApprovalRules": {
+    "requireApprovalFor": [
+      "npm publish",
+      "git push",
+      "rm -rf",
+      "ssh",
+      "curl.*http.*ckb",
+      "curl.*http.*fiber"
+    ],
+    "autoApprovePatterns": [
+      "npm test",
+      "npm run lint",
+      "npx prettier",
+      "git status",
+      "git log",
+      "ls",
+      "cat"
+    ]
+  },
+  "fileContextRules": {
+    "maxFilesPerEdit": 3,
+    "preferredContextFiles": [
+      "src/index.js",
+      "src/ckb-client.js",
+      "src/game-validator.js",
+      "README.md",
+      "ARCHITECTURE.md"
+    ],
+    "excludePatterns": [
+      "node_modules/**",
+      ".git/**",
+      "*.log",
+      "coverage/**",
+      "dist/**",
+      ".DS_Store"
+    ]
+  },
+  "testingConfig": {
+    "testRunner": "jest",
+    "runTestsAfterEdit": true,
+    "failOnTestError": true,
+    "coverageThreshold": 80
+  },
+  "gitConfig": {
+    "requireCommitAfterEdit": true,
+    "commitMessageTemplate": "[agent] {module}: {change description}\n\nChanged files: {files}\nTests: {status}\nReviewed by: Cline autonomous agent"
+  }
+}

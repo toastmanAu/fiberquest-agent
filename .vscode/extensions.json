@@ -1,0 +1,17 @@
+{
+  "recommendations": [
+    "saoudrizwan.claude-dev",
+    "continue.continue",
+    "dbaeumer.vscode-eslint",
+    "esbenp.prettier-vscode",
+    "vitest.explorer",
+    "usernamehw.errorlens",
+    "eamodio.gitlens",
+    "GitHub.copilot",
+    "ms-vscode.makefile-tools",
+    "redhat.vscode-yaml",
+    "tamasfe.even-better-toml",
+    "ms-vscode-remote.remote-ssh",
+    "ms-vscode-remote.remote-ssh-edit"
+  ]
+}

@@ -1,0 +1,70 @@
+{
+  "editor.defaultFormatter": "esbenp.prettier-vscode",
+  "editor.formatOnSave": true,
+  "editor.formatOnPaste": true,
+  "editor.codeActionsOnSave": {
+    "source.fixAll.eslint": true,
+    "source.organizeImports": true
+  },
+  "[javascript]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode",
+    "editor.formatOnSave": true
+  },
+  "[json]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "[markdown]": {
+    "editor.wordWrap": "on",
+    "editor.formatOnSave": false
+  },
+  "eslint.enable": true,
+  "eslint.run": "onSave",
+  "eslint.validate": [
+    "javascript",
+    "javascriptreact"
+  ],
+  "errorLens.enabled": true,
+  "errorLens.followCursorMovement": true,
+  "errorLens.gutterIconsEnabled": true,
+  "errorLens.messageTemplate": "$message [$source ($code)]",
+  "gitLens.enabled": true,
+  "gitLens.codeLens.enabled": true,
+  "gitLens.hovers.enabled": true,
+  "gitLens.blame.ignoreWhitespace": true,
+  "testing.automaticallyOpenPeekView": "failureInVisibleDocument",
+  "files.exclude": {
+    "**/.git": false,
+    "**/node_modules": true,
+    "**/.DS_Store": true,
+    "**/coverage": true,
+    "**/*.log": true
+  },
+  "search.exclude": {
+    "**/node_modules": true,
+    "**/.git": true,
+    "**/coverage": true,
+    "build/**": true
+  },
+  "files.watcherExclude": {
+    "**/node_modules/**": true,
+    "**/.git/**": true,
+    "**/coverage/**": true
+  },
+  "javascript.updateImportsOnFileMove.enabled": "always",
+  "javascript.preferences.quotePreference": "single",
+  "javascript.preferences.useRigorous Strict": true,
+  "editor.rulers": [80, 120],
+  "editor.wordWrap": "bounded",
+  "editor.wordWrapColumn": 120,
+  "prettier.semi": true,
+  "prettier.singleQuote": true,
+  "prettier.trailingComma": "es5",
+  "prettier.printWidth": 100,
+  "[jsonc]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "cline.requestApprovalForLargeEdits": true,
+  "cline.largeEditThreshold": 500,
+  "cline.autoApproveSmallChanges": true,
+  "cline.smallChangeThreshold": 100
+}
