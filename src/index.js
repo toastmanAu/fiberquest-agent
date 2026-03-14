@@ -24,6 +24,9 @@ const { EventEmitter } = require('events');
 
 const CKBClient = require('./ckb-client');
 const TelegramHandler = require('./telegram-handler');
+const EntryHandler = require('./entry-handler');
+const FiberSettler = require('./fiber-settler');
+const WebsiteAPI = require('./website-api');
 const Database = require('./database');
 
 class FiberQuestAgent extends EventEmitter {
@@ -41,6 +44,8 @@ class FiberQuestAgent extends EventEmitter {
     this.db = new Database();
     this.ckb = new CKBClient(this.config);
     this.telegram = new TelegramHandler(this.config);
+    this.entryHandler = new EntryHandler(this.config, this.db, this.ckb);
+    this.fiberSettler = new FiberSettler(this.config, this.db);
     this.subagents = new Map();
     this.workQueue = [];
     this.startTime = Date.now();
@@ -78,17 +83,14 @@ class FiberQuestAgent extends EventEmitter {
 
   async startDepositPolling() {
     console.log('[FiberQuest] Starting CKB deposit polling...');
-    setInterval(async () => {
-      try {
-        const deposits = await this.ckb.pollForDeposits();
-        if (deposits.length > 0) {
-          console.log(`[FiberQuest] 🔔 Detected ${deposits.length} new deposits`);
-          this.emit('deposits', deposits);
-        }
-      } catch (e) {
-        console.error('[FiberQuest] Polling error:', e.message);
-      }
-    }, 12000); // Poll every 2 blocks (~12 seconds)
+    
+    // Use entry handler's polling
+    this.entryHandler.on('tournament-ready', (event) => {
+      console.log(`[FiberQuest] Tournament ${event.tournamentId} ready with ${event.playerCount} players`);
+      this.emit('tournament-ready', event);
+    });
+
+    this.entryHandler.startPolling(12000);
   }
 
   async start() {
@@ -154,6 +156,16 @@ class FiberQuestAgent extends EventEmitter {
         this.workQueue.push({ type: 'settle', taskId, tournamentId, winnerId, prizeAmount });
         console.log(`[FiberQuest] Queued settlement: ${taskId}`);
         
+        // Trigger settlement immediately (can be async)
+        setImmediate(async () => {
+          try {
+            const result = await this.fiberSettler.settleTournament(tournamentId, winnerId, prizeAmount);
+            console.log(`[FiberQuest] ✅ Settlement complete:`, result);
+          } catch (e) {
+            console.error(`[FiberQuest] Settlement error:`, e.message);
+          }
+        });
+        
         res.json({ taskId, queued: true });
       } catch (e) {
         res.status(500).json({ error: e.message });
@@ -163,8 +175,12 @@ class FiberQuestAgent extends EventEmitter {
     app.listen(this.config.port, () => {
       console.log(`[FiberQuest] HTTP server listening on port ${this.config.port}`);
       console.log(`[FiberQuest] Telegram webhook: /telegram`);
+      console.log(`[FiberQuest] Website API: /api/tournaments, /api/tournament/join`);
       console.log(`[FiberQuest] Ready for work. @OcRyzesBot is now live.`);
     });
+
+    // Setup website API
+    new WebsiteAPI(app, this.db, this.ckb);
   }
 }
 
